@@ -1,0 +1,15 @@
+# ビルドに不要なファイルを除外（Docker イメージを軽量化）
+dist/
+*.zip
+*.command
+*.bat
+README.txt
+.DS_Store
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.gitignore
+.venv/
+.env
+*.md

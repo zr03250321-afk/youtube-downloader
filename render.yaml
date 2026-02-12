@@ -1,0 +1,13 @@
+# =====================================================
+#  Render Blueprint — ワンクリックデプロイ設定
+#  https://render.com/docs/blueprint-spec
+# =====================================================
+services:
+  - type: web
+    name: youtube-downloader
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
