@@ -39,6 +39,31 @@ os.makedirs(TEMP_BASE_DIR, exist_ok=True)
 
 
 # =====================================================================
+#  YouTube Cookie 対応（ボット検出回避）
+# =====================================================================
+COOKIES_FILE: str | None = None
+
+
+def _setup_cookies() -> None:
+    """環境変数 YOUTUBE_COOKIES からCookieファイルを生成"""
+    global COOKIES_FILE
+    cookies_data = os.environ.get("YOUTUBE_COOKIES", "").strip()
+    if cookies_data:
+        cookies_path = os.path.join(TEMP_BASE_DIR, "cookies.txt")
+        with open(cookies_path, "w", encoding="utf-8") as f:
+            f.write(cookies_data)
+        COOKIES_FILE = cookies_path
+        logger.info("YouTube cookies configured from environment variable")
+    else:
+        logger.warning(
+            "YOUTUBE_COOKIES not set — some videos may fail with bot detection"
+        )
+
+
+_setup_cookies()
+
+
+# =====================================================================
 #  スレッドセーフなタスク管理
 # =====================================================================
 _tasks: dict = {}
@@ -171,6 +196,10 @@ def _run_download(
             "windowsfilenames": True,  # ファイル名の安全化
         }
 
+        # Cookie が設定されていれば追加
+        if COOKIES_FILE:
+            ydl_opts["cookiefile"] = COOKIES_FILE
+
         if format_type == "audio":
             ydl_opts.update(
                 {
@@ -260,6 +289,8 @@ def api_info():
 
     try:
         ydl_opts = {"quiet": True, "no_warnings": True, "noplaylist": True}
+        if COOKIES_FILE:
+            ydl_opts["cookiefile"] = COOKIES_FILE
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
