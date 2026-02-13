@@ -43,31 +43,34 @@ os.makedirs(TEMP_BASE_DIR, exist_ok=True)
 # =====================================================================
 COOKIES_FILE: str | None = None
 
-# Cookie ファイルの検索パス（優先度順）
-_COOKIE_PATHS = [
-    "/etc/secrets/cookies.txt",           # Render Secret Files
-    os.path.join(TEMP_BASE_DIR, "cookies.txt"),  # 環境変数から生成
-]
+# 書き込み可能なCookieファイルのパス
+_WRITABLE_COOKIES = os.path.join(TEMP_BASE_DIR, "cookies.txt")
+
+# 読み取り専用のソース（Render Secret Files）
+_SECRET_COOKIES = "/etc/secrets/cookies.txt"
 
 
 def _setup_cookies() -> None:
-    """Cookieファイルを検索・設定"""
+    """Cookieファイルを検索・設定（書き込み可能な場所にコピー）"""
     global COOKIES_FILE
 
-    # 1. Secret File が存在するか確認
-    for path in _COOKIE_PATHS[:1]:
-        if os.path.isfile(path):
-            COOKIES_FILE = path
-            logger.info("YouTube cookies loaded from: %s", path)
-            return
+    # 1. Render Secret File → 書き込み可能な場所にコピー
+    if os.path.isfile(_SECRET_COOKIES):
+        shutil.copy2(_SECRET_COOKIES, _WRITABLE_COOKIES)
+        COOKIES_FILE = _WRITABLE_COOKIES
+        logger.info(
+            "YouTube cookies copied from %s to %s",
+            _SECRET_COOKIES,
+            _WRITABLE_COOKIES,
+        )
+        return
 
     # 2. 環境変数からファイルを生成
     cookies_data = os.environ.get("YOUTUBE_COOKIES", "").strip()
     if cookies_data:
-        cookies_path = _COOKIE_PATHS[1]
-        with open(cookies_path, "w", encoding="utf-8") as f:
+        with open(_WRITABLE_COOKIES, "w", encoding="utf-8") as f:
             f.write(cookies_data)
-        COOKIES_FILE = cookies_path
+        COOKIES_FILE = _WRITABLE_COOKIES
         logger.info("YouTube cookies generated from environment variable")
         return
 
