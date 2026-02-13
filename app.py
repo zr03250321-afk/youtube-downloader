@@ -38,6 +38,9 @@ CLEANUP_INTERVAL_SEC = 300
 # Cookie ソースファイル（Render Secret Files）
 _SECRET_COOKIES = "/etc/secrets/cookies.txt"
 
+# PO Token サーバー（bgutil-ytdlp-pot-provider）
+_POT_SERVER_URL = "http://127.0.0.1:4416"
+
 os.makedirs(TEMP_BASE_DIR, exist_ok=True)
 
 
@@ -193,10 +196,15 @@ def _run_download(
     try:
         output_tpl = os.path.join(task_dir, "%(title)s.%(ext)s")
 
-        # ----- 動画情報を先に取得（フレッシュCookie）-----
+        # ----- 動画情報を先に取得（フレッシュCookie + PO Token）-----
         info_cookie = _fresh_cookie_path(task_dir)
         info_opts: dict = {
             "quiet": True, "no_warnings": True, "noplaylist": True,
+            "extractor_args": {
+                "youtube": {
+                    "getpot_bgutil_baseurl": [_POT_SERVER_URL],
+                },
+            },
         }
         if info_cookie:
             info_opts["cookiefile"] = info_cookie
@@ -239,6 +247,11 @@ def _run_download(
                 "noplaylist": True,
                 "windowsfilenames": True,
                 "format": fmt_str,
+                "extractor_args": {
+                    "youtube": {
+                        "getpot_bgutil_baseurl": [_POT_SERVER_URL],
+                    },
+                },
             }
             if dl_cookie:
                 dl_opts["cookiefile"] = dl_cookie
@@ -338,6 +351,11 @@ def api_info():
         cookie_path = _fresh_cookie_path()
         ydl_opts: dict = {
             "quiet": True, "no_warnings": True, "noplaylist": True,
+            "extractor_args": {
+                "youtube": {
+                    "getpot_bgutil_baseurl": [_POT_SERVER_URL],
+                },
+            },
         }
         if cookie_path:
             ydl_opts["cookiefile"] = cookie_path
