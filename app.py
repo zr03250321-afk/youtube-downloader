@@ -43,21 +43,37 @@ os.makedirs(TEMP_BASE_DIR, exist_ok=True)
 # =====================================================================
 COOKIES_FILE: str | None = None
 
+# Cookie ファイルの検索パス（優先度順）
+_COOKIE_PATHS = [
+    "/etc/secrets/cookies.txt",           # Render Secret Files
+    os.path.join(TEMP_BASE_DIR, "cookies.txt"),  # 環境変数から生成
+]
+
 
 def _setup_cookies() -> None:
-    """環境変数 YOUTUBE_COOKIES からCookieファイルを生成"""
+    """Cookieファイルを検索・設定"""
     global COOKIES_FILE
+
+    # 1. Secret File が存在するか確認
+    for path in _COOKIE_PATHS[:1]:
+        if os.path.isfile(path):
+            COOKIES_FILE = path
+            logger.info("YouTube cookies loaded from: %s", path)
+            return
+
+    # 2. 環境変数からファイルを生成
     cookies_data = os.environ.get("YOUTUBE_COOKIES", "").strip()
     if cookies_data:
-        cookies_path = os.path.join(TEMP_BASE_DIR, "cookies.txt")
+        cookies_path = _COOKIE_PATHS[1]
         with open(cookies_path, "w", encoding="utf-8") as f:
             f.write(cookies_data)
         COOKIES_FILE = cookies_path
-        logger.info("YouTube cookies configured from environment variable")
-    else:
-        logger.warning(
-            "YOUTUBE_COOKIES not set — some videos may fail with bot detection"
-        )
+        logger.info("YouTube cookies generated from environment variable")
+        return
+
+    logger.warning(
+        "No YouTube cookies found — some videos may fail with bot detection"
+    )
 
 
 _setup_cookies()
