@@ -30,56 +30,46 @@ logger = logging.getLogger("ytdl")
 
 # ----- 定数 -----
 TEMP_BASE_DIR = os.path.join(tempfile.gettempdir(), "ytdl_app")
-MAX_CONCURRENT = 3            # 同時ダウンロード上限
-MAX_DURATION_SEC = 7200       # ダウンロード可能な動画の最大長さ（2時間）
-FILE_TTL_SEC = 1800           # 一時ファイルの保持時間（30分）
-CLEANUP_INTERVAL_SEC = 300    # クリーンアップの実行間隔（5分）
+MAX_CONCURRENT = 3
+MAX_DURATION_SEC = 7200
+FILE_TTL_SEC = 1800
+CLEANUP_INTERVAL_SEC = 300
+
+# Cookie ソースファイル（Render Secret Files）
+_SECRET_COOKIES = "/etc/secrets/cookies.txt"
 
 os.makedirs(TEMP_BASE_DIR, exist_ok=True)
 
 
 # =====================================================================
-#  YouTube Cookie 対応（ボット検出回避）
+#  Cookie ヘルパー — 毎回フレッシュなコピーを生成
 # =====================================================================
-COOKIES_FILE: str | None = None
-
-# 書き込み可能なCookieファイルのパス
-_WRITABLE_COOKIES = os.path.join(TEMP_BASE_DIR, "cookies.txt")
-
-# 読み取り専用のソース（Render Secret Files）
-_SECRET_COOKIES = "/etc/secrets/cookies.txt"
+def _has_cookies() -> bool:
+    """Cookieソースが存在するか"""
+    return os.path.isfile(_SECRET_COOKIES)
 
 
-def _setup_cookies() -> None:
-    """Cookieファイルを検索・設定（書き込み可能な場所にコピー）"""
-    global COOKIES_FILE
-
-    # 1. Render Secret File → 書き込み可能な場所にコピー
-    if os.path.isfile(_SECRET_COOKIES):
-        shutil.copy2(_SECRET_COOKIES, _WRITABLE_COOKIES)
-        COOKIES_FILE = _WRITABLE_COOKIES
-        logger.info(
-            "YouTube cookies copied from %s to %s",
-            _SECRET_COOKIES,
-            _WRITABLE_COOKIES,
-        )
-        return
-
-    # 2. 環境変数からファイルを生成
-    cookies_data = os.environ.get("YOUTUBE_COOKIES", "").strip()
-    if cookies_data:
-        with open(_WRITABLE_COOKIES, "w", encoding="utf-8") as f:
+def _fresh_cookie_path(task_dir: str | None = None) -> str | None:
+    """
+    Secret File から書き込み可能な新しいコピーを作成して返す。
+    yt-dlp は Cookie ファイルに書き込むため、毎回新鮮なコピーが必要。
+    """
+    if not _has_cookies():
+        # 環境変数フォールバック
+        cookies_data = os.environ.get("YOUTUBE_COOKIES", "").strip()
+        if not cookies_data:
+            return None
+        dest_dir = task_dir or TEMP_BASE_DIR
+        dest = os.path.join(dest_dir, f"cookies_{uuid.uuid4().hex[:8]}.txt")
+        with open(dest, "w", encoding="utf-8") as f:
             f.write(cookies_data)
-        COOKIES_FILE = _WRITABLE_COOKIES
-        logger.info("YouTube cookies generated from environment variable")
-        return
+        return dest
 
-    logger.warning(
-        "No YouTube cookies found — some videos may fail with bot detection"
-    )
-
-
-_setup_cookies()
+    dest_dir = task_dir or TEMP_BASE_DIR
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = os.path.join(dest_dir, f"cookies_{uuid.uuid4().hex[:8]}.txt")
+    shutil.copy2(_SECRET_COOKIES, dest)
+    return dest
 
 
 # =====================================================================
@@ -89,9 +79,9 @@ _tasks: dict = {}
 _tasks_lock = threading.Lock()
 
 
-def _create_task(task_id: str, **kwargs) -> None:
+def _create_task(task_id: str, **kw) -> None:
     with _tasks_lock:
-        _tasks[task_id] = kwargs
+        _tasks[task_id] = kw
 
 
 def _get_task(task_id: str) -> dict:
@@ -99,10 +89,10 @@ def _get_task(task_id: str) -> dict:
         return _tasks.get(task_id, {}).copy()
 
 
-def _update_task(task_id: str, **kwargs) -> None:
+def _update_task(task_id: str, **kw) -> None:
     with _tasks_lock:
         if task_id in _tasks:
-            _tasks[task_id].update(kwargs)
+            _tasks[task_id].update(kw)
 
 
 def _remove_task(task_id: str) -> dict | None:
@@ -123,48 +113,41 @@ def _count_active() -> int:
 #  一時ファイルのクリーンアップ
 # =====================================================================
 def _cleanup_task_files(task_id: str) -> None:
-    """タスクに紐づく一時ディレクトリを安全に削除"""
     task_dir = os.path.join(TEMP_BASE_DIR, task_id)
     if os.path.isdir(task_dir):
         try:
             shutil.rmtree(task_dir)
-            logger.info("Cleaned up files for task %s", task_id)
         except OSError as exc:
-            logger.warning("Failed to clean up %s: %s", task_id, exc)
+            logger.warning("Cleanup failed %s: %s", task_id, exc)
 
 
 def _cleanup_worker() -> None:
-    """期限切れタスクを定期的に削除するバックグラウンドワーカー"""
     while True:
         time.sleep(CLEANUP_INTERVAL_SEC)
         try:
             now = time.time()
-            expired_ids: list[str] = []
+            expired: list[str] = []
             with _tasks_lock:
-                for tid, task in _tasks.items():
-                    age = now - task.get("created_at", now)
-                    if age > FILE_TTL_SEC and task.get("status") in (
-                        "ready",
-                        "error",
-                        "completed",
+                for tid, t in _tasks.items():
+                    age = now - t.get("created_at", now)
+                    if age > FILE_TTL_SEC and t.get("status") in (
+                        "ready", "error", "completed",
                     ):
-                        expired_ids.append(tid)
-            for tid in expired_ids:
+                        expired.append(tid)
+            for tid in expired:
                 _cleanup_task_files(tid)
                 _remove_task(tid)
-                logger.info("Expired task removed: %s", tid)
         except Exception as exc:
-            logger.error("Cleanup worker error: %s", exc)
+            logger.error("Cleanup error: %s", exc)
 
 
 threading.Thread(target=_cleanup_worker, daemon=True).start()
 
 
 # =====================================================================
-#  yt-dlp ダウンロード処理
+#  yt-dlp ダウンロード処理（リトライ付き）
 # =====================================================================
 def _progress_hook(d: dict, task_id: str) -> None:
-    """yt-dlp からの進捗コールバック"""
     task = _get_task(task_id)
     if not task or task.get("status") == "cancelled":
         return
@@ -172,116 +155,160 @@ def _progress_hook(d: dict, task_id: str) -> None:
     if d["status"] == "downloading":
         total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
         downloaded = d.get("downloaded_bytes", 0)
-        percent = min(int((downloaded / total) * 100), 99) if total > 0 else 0
-
+        pct = min(int((downloaded / total) * 100), 99) if total > 0 else 0
         _update_task(
-            task_id,
-            status="downloading",
-            percent=percent,
-            speed=d.get("_speed_str", ""),
-            eta=d.get("_eta_str", ""),
+            task_id, status="downloading", percent=pct,
+            speed=d.get("_speed_str", ""), eta=d.get("_eta_str", ""),
         )
-
     elif d["status"] == "finished":
         _update_task(
-            task_id,
-            status="processing",
-            percent=99,
-            message="変換処理中...",
-            speed="",
-            eta="",
+            task_id, status="processing", percent=99,
+            message="変換処理中...", speed="", eta="",
         )
+
+
+# フォーマット試行リスト（上から順に試す）
+def _video_format_chain(height: int) -> list[str]:
+    """動画フォーマットの優先順位リスト"""
+    return [
+        # 1. 指定画質で映像+音声を結合
+        f"bestvideo[height<={height}]+bestaudio",
+        # 2. 画質制限なしで映像+音声を結合
+        "bestvideo+bestaudio",
+        # 3. 指定画質以下の結合済みファイル
+        f"best[height<={height}]",
+        # 4. とにかく最高品質
+        "best",
+    ]
 
 
 def _run_download(
-    url: str,
-    task_id: str,
-    format_type: str = "video",
-    quality: str = "1080",
+    url: str, task_id: str,
+    format_type: str = "video", quality: str = "1080",
 ) -> None:
-    """バックグラウンドスレッドでダウンロードを実行"""
+    """バックグラウンドでダウンロード — フォーマット自動リトライ付き"""
     task_dir = os.path.join(TEMP_BASE_DIR, task_id)
     os.makedirs(task_dir, exist_ok=True)
 
     try:
         output_tpl = os.path.join(task_dir, "%(title)s.%(ext)s")
 
-        ydl_opts: dict = {
-            "outtmpl": output_tpl,
-            "progress_hooks": [lambda d: _progress_hook(d, task_id)],
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "windowsfilenames": True,  # ファイル名の安全化
+        # ----- 動画情報を先に取得（フレッシュCookie）-----
+        info_cookie = _fresh_cookie_path(task_dir)
+        info_opts: dict = {
+            "quiet": True, "no_warnings": True, "noplaylist": True,
         }
+        if info_cookie:
+            info_opts["cookiefile"] = info_cookie
 
-        # Cookie が設定されていれば追加
-        if COOKIES_FILE:
-            ydl_opts["cookiefile"] = COOKIES_FILE
+        with yt_dlp.YoutubeDL(info_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
 
+        _update_task(
+            task_id,
+            title=info.get("title", ""),
+            channel=info.get("channel", info.get("uploader", "")),
+        )
+
+        # ----- フォーマット候補を決定 -----
         if format_type == "audio":
-            ydl_opts.update(
-                {
-                    "format": "bestaudio/best",
-                    "postprocessors": [
-                        {
-                            "key": "FFmpegExtractAudio",
-                            "preferredcodec": "mp3",
-                            "preferredquality": "192",
-                        }
-                    ],
-                }
-            )
+            format_candidates = ["bestaudio/best"]
+            postprocessors = [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }]
+            merge_format = None
         else:
             h = int(quality) if quality else 1080
-            ydl_opts.update(
-                {
-                    "format": (
-                        f"bestvideo[height<={h}]+bestaudio/"
-                        f"bestvideo+bestaudio/"
-                        f"best[height<={h}]/"
-                        f"best"
-                    ),
-                    "merge_output_format": "mp4",
-                }
-            )
+            format_candidates = _video_format_chain(h)
+            postprocessors = []
+            merge_format = "mp4"
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # まず情報だけ取得してタスクに反映
-            info = ydl.extract_info(url, download=False)
-            _update_task(
-                task_id,
-                title=info.get("title", ""),
-                channel=info.get("channel", info.get("uploader", "")),
-            )
-            # ダウンロード実行
-            ydl.download([url])
+        # ----- フォーマットを順に試す -----
+        last_error = None
+        for i, fmt_str in enumerate(format_candidates):
+            # 毎回フレッシュなCookieコピーを使う
+            dl_cookie = _fresh_cookie_path(task_dir)
 
-        # ダウンロード完了 — 最終ファイルを特定
-        files = [f for f in os.listdir(task_dir) if not f.startswith(".")]
-        if not files:
+            dl_opts: dict = {
+                "outtmpl": output_tpl,
+                "progress_hooks": [lambda d: _progress_hook(d, task_id)],
+                "quiet": True,
+                "no_warnings": True,
+                "noplaylist": True,
+                "windowsfilenames": True,
+                "format": fmt_str,
+            }
+            if dl_cookie:
+                dl_opts["cookiefile"] = dl_cookie
+            if postprocessors:
+                dl_opts["postprocessors"] = postprocessors
+            if merge_format and "+" in fmt_str:
+                dl_opts["merge_output_format"] = merge_format
+
+            try:
+                logger.info(
+                    "[%s] Attempt %d/%d: format='%s'",
+                    task_id, i + 1, len(format_candidates), fmt_str,
+                )
+                _update_task(task_id, message=f"ダウンロード中... (形式 {i+1}/{len(format_candidates)})")
+
+                with yt_dlp.YoutubeDL(dl_opts) as ydl:
+                    ydl.download([url])
+
+                # 成功 — ループを抜ける
+                last_error = None
+                logger.info("[%s] Success with format='%s'", task_id, fmt_str)
+                break
+
+            except Exception as exc:
+                last_error = exc
+                err_msg = str(exc).lower()
+                logger.warning(
+                    "[%s] Format '%s' failed: %s", task_id, fmt_str, exc,
+                )
+
+                # Cookie/認証エラーの場合はリトライしても無駄
+                if "sign in" in err_msg or "bot" in err_msg:
+                    logger.error("[%s] Authentication error — aborting", task_id)
+                    break
+
+                # ダウンロード途中のファイルを掃除
+                for f in os.listdir(task_dir):
+                    if f.startswith("cookies_"):
+                        continue
+                    fpath = os.path.join(task_dir, f)
+                    if os.path.isfile(fpath):
+                        os.remove(fpath)
+
+                continue
+
+        # ----- 全フォーマット失敗 -----
+        if last_error:
+            raise last_error
+
+        # ----- 成功: ファイルを特定 -----
+        result_files = [
+            f for f in os.listdir(task_dir)
+            if not f.startswith("cookies_") and not f.startswith(".")
+        ]
+        if not result_files:
             raise FileNotFoundError("ダウンロードしたファイルが見つかりません")
 
-        # 複数ファイルがある場合（中間ファイル残存時）最大サイズを選択
         filepath = max(
-            (os.path.join(task_dir, f) for f in files),
+            (os.path.join(task_dir, f) for f in result_files),
             key=os.path.getsize,
         )
         filename = os.path.basename(filepath)
         filesize = os.path.getsize(filepath)
 
         _update_task(
-            task_id,
-            status="ready",
-            percent=100,
-            filepath=filepath,
-            filename=filename,
-            filesize=filesize,
+            task_id, status="ready", percent=100,
+            filepath=filepath, filename=filename, filesize=filesize,
             message="ダウンロード準備完了",
         )
-        logger.info(
-            "Download ready: %s (%s bytes)", filename, f"{filesize:,}"
-        )
+        logger.info("Download ready: %s (%s bytes)", filename, f"{filesize:,}")
 
     except Exception as exc:
         logger.error("Download error [%s]: %s", task_id, exc)
@@ -293,13 +320,12 @@ def _run_download(
 # =====================================================================
 @app.route("/")
 def index():
-    """メインページを表示"""
     return render_template("index.html")
 
 
 @app.route("/api/info", methods=["POST"])
 def api_info():
-    """動画情報を取得（ダウンロードはしない・軽量）"""
+    """動画情報を取得（フレッシュCookie使用）"""
     data = request.json or {}
     url = data.get("url", "").strip()
 
@@ -309,15 +335,19 @@ def api_info():
         return jsonify({"error": "有効なYouTube URLを入力してください"}), 400
 
     try:
-        ydl_opts = {"quiet": True, "no_warnings": True, "noplaylist": True}
-        if COOKIES_FILE:
-            ydl_opts["cookiefile"] = COOKIES_FILE
+        cookie_path = _fresh_cookie_path()
+        ydl_opts: dict = {
+            "quiet": True, "no_warnings": True, "noplaylist": True,
+        }
+        if cookie_path:
+            ydl_opts["cookiefile"] = cookie_path
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
         duration = info.get("duration", 0) or 0
 
-        # 利用可能な画質をリストアップ
+        # 利用可能な画質
         qualities: list[dict] = []
         if info.get("formats"):
             seen: set[int] = set()
@@ -328,7 +358,6 @@ def api_info():
                     qualities.append({"value": str(h), "label": f"{h}p"})
             qualities.sort(key=lambda x: int(x["value"]), reverse=True)
 
-        # フォールバック
         if not qualities:
             qualities = [
                 {"value": "1080", "label": "1080p"},
@@ -336,43 +365,34 @@ def api_info():
                 {"value": "480", "label": "480p"},
             ]
 
-        return jsonify(
-            {
-                "title": info.get("title", "不明"),
-                "channel": info.get(
-                    "channel", info.get("uploader", "不明")
-                ),
-                "duration": duration,
-                "thumbnail": info.get("thumbnail", ""),
-                "view_count": info.get("view_count", 0),
-                "qualities": qualities,
-                "too_long": duration > MAX_DURATION_SEC,
-            }
-        )
+        # Cookie 一時ファイルを掃除
+        if cookie_path and os.path.isfile(cookie_path):
+            try:
+                os.remove(cookie_path)
+            except OSError:
+                pass
+
+        return jsonify({
+            "title": info.get("title", "不明"),
+            "channel": info.get("channel", info.get("uploader", "不明")),
+            "duration": duration,
+            "thumbnail": info.get("thumbnail", ""),
+            "view_count": info.get("view_count", 0),
+            "qualities": qualities,
+            "too_long": duration > MAX_DURATION_SEC,
+        })
 
     except Exception as exc:
-        return (
-            jsonify({"error": f"動画情報を取得できませんでした: {exc}"}),
-            400,
-        )
+        return jsonify({"error": f"動画情報を取得できませんでした: {exc}"}), 400
 
 
 @app.route("/api/prepare", methods=["POST"])
 def api_prepare():
     """ダウンロードをバックグラウンドで開始"""
-    # 同時実行数チェック
     if _count_active() >= MAX_CONCURRENT:
-        return (
-            jsonify(
-                {
-                    "error": (
-                        "サーバーが混雑しています。"
-                        "しばらくしてから再度お試しください。"
-                    )
-                }
-            ),
-            429,
-        )
+        return jsonify({
+            "error": "サーバーが混雑しています。しばらくしてから再度お試しください。"
+        }), 429
 
     data = request.json or {}
     url = data.get("url", "").strip()
@@ -386,14 +406,9 @@ def api_prepare():
 
     task_id = uuid.uuid4().hex
     _create_task(
-        task_id,
-        status="starting",
-        percent=0,
-        url=url,
-        format=fmt,
-        quality=quality,
-        created_at=time.time(),
-        message="ダウンロードを開始しています...",
+        task_id, status="starting", percent=0,
+        url=url, format=fmt, quality=quality,
+        created_at=time.time(), message="ダウンロードを開始しています...",
     )
 
     threading.Thread(
@@ -407,23 +422,19 @@ def api_prepare():
 
 @app.route("/api/progress/<task_id>")
 def api_progress(task_id: str):
-    """ダウンロード進捗を返す"""
     task = _get_task(task_id)
     if not task:
         return jsonify({"error": "不明なタスクID"}), 404
-
-    return jsonify(
-        {
-            "status": task.get("status", "unknown"),
-            "percent": task.get("percent", 0),
-            "speed": task.get("speed", ""),
-            "eta": task.get("eta", ""),
-            "message": task.get("message", ""),
-            "filename": task.get("filename", ""),
-            "filesize": task.get("filesize", 0),
-            "title": task.get("title", ""),
-        }
-    )
+    return jsonify({
+        "status": task.get("status", "unknown"),
+        "percent": task.get("percent", 0),
+        "speed": task.get("speed", ""),
+        "eta": task.get("eta", ""),
+        "message": task.get("message", ""),
+        "filename": task.get("filename", ""),
+        "filesize": task.get("filesize", 0),
+        "title": task.get("title", ""),
+    })
 
 
 @app.route("/api/download/<task_id>")
@@ -433,93 +444,57 @@ def api_download(task_id: str):
     if not task:
         return jsonify({"error": "不明なタスクID"}), 404
     if task.get("status") != "ready":
-        return (
-            jsonify({"error": "ファイルの準備ができていません"}),
-            400,
-        )
+        return jsonify({"error": "ファイルの準備ができていません"}), 400
 
     filepath = task.get("filepath", "")
     filename = task.get("filename", "download")
 
     if not filepath or not os.path.isfile(filepath):
-        return (
-            jsonify(
-                {"error": "ファイルが見つかりません（有効期限切れの可能性があります）"}
-            ),
-            404,
-        )
+        return jsonify({
+            "error": "ファイルが見つかりません（有効期限切れの可能性があります）"
+        }), 404
 
     filesize = os.path.getsize(filepath)
-
-    # MIME タイプの判定
     ext = os.path.splitext(filename)[1].lower()
     mime_map = {
-        ".mp4": "video/mp4",
-        ".mp3": "audio/mpeg",
-        ".webm": "video/webm",
-        ".mkv": "video/x-matroska",
-        ".m4a": "audio/mp4",
-        ".opus": "audio/opus",
-        ".ogg": "audio/ogg",
+        ".mp4": "video/mp4", ".mp3": "audio/mpeg",
+        ".webm": "video/webm", ".mkv": "video/x-matroska",
+        ".m4a": "audio/mp4", ".opus": "audio/opus", ".ogg": "audio/ogg",
     }
-    content_type = mime_map.get(ext, "application/octet-stream")
 
-    # 64KB チャンクでストリーミング（メモリを節約）
-    def _generate():
+    def _stream():
         with open(filepath, "rb") as fh:
-            while True:
-                chunk = fh.read(65_536)
-                if not chunk:
-                    break
+            while chunk := fh.read(65_536):
                 yield chunk
 
-    # RFC 5987 でファイル名をエンコード（日本語タイトル対応）
-    encoded_name = quote(filename)
-
     response = Response(
-        _generate(),
-        mimetype=content_type,
+        _stream(),
+        mimetype=mime_map.get(ext, "application/octet-stream"),
         headers={
-            "Content-Disposition": (
-                f"attachment; filename*=UTF-8''{encoded_name}"
-            ),
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
             "Content-Length": str(filesize),
             "Cache-Control": "no-cache",
         },
     )
 
-    # ダウンロード完了後に一定時間経ってからファイルを削除
     def _delayed_cleanup():
         time.sleep(120)
         _cleanup_task_files(task_id)
         _remove_task(task_id)
-        logger.info("Post-download cleanup: %s", task_id)
 
     threading.Thread(target=_delayed_cleanup, daemon=True).start()
-
     return response
 
 
 @app.route("/health")
 def health():
-    """Render のヘルスチェック用"""
     return jsonify({"status": "ok", "timestamp": time.time()})
 
 
 # =====================================================================
-#  ローカル実行用エントリポイント
+#  ローカル実行用
 # =====================================================================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    debug = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
-
-    print()
-    print("=" * 50)
-    print("  YouTube Downloader")
-    print("=" * 50)
-    print(f"  http://localhost:{port}")
-    print("  終了するには Ctrl+C を押してください")
-    print("=" * 50)
-    print()
-
-    app.run(host="0.0.0.0", port=port, debug=debug)
+    print(f"\n  YouTube Downloader — http://localhost:{port}\n")
+    app.run(host="0.0.0.0", port=port, debug=True)
