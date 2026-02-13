@@ -219,7 +219,9 @@ def _run_download(
                 {
                     "format": (
                         f"bestvideo[height<={h}]+bestaudio/"
-                        f"best[height<={h}]/best"
+                        f"bestvideo+bestaudio/"
+                        f"best[height<={h}]/"
+                        f"best"
                     ),
                     "merge_output_format": "mp4",
                 }
