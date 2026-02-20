@@ -1,6 +1,6 @@
 # =====================================================
 #  YouTube Downloader — Production Dockerfile
-#  Python 3.11 + ffmpeg + Node.js + PO Token Provider
+#  Python 3.11 + ffmpeg + deno + Node.js + PO Token
 # =====================================================
 FROM python:3.11-slim
 
@@ -11,7 +11,11 @@ RUN apt-get update && \
         curl \
         git \
         ca-certificates \
+        unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# deno インストール（yt-dlp の YouTube JS 解析に必要）
+RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh
 
 # Node.js 20 インストール（PO Token 生成に必要）
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
