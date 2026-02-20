@@ -46,6 +46,21 @@ _POT_SERVER_URL = "http://127.0.0.1:4416"
 os.makedirs(TEMP_BASE_DIR, exist_ok=True)
 
 
+def _base_ydl_opts() -> dict:
+    """全ての yt-dlp 呼び出しに共通する基本オプション"""
+    return {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "remote_components": ["ejs:github"],
+        "extractor_args": {
+            "youtube": {
+                "getpot_bgutil_baseurl": [_POT_SERVER_URL],
+            },
+        },
+    }
+
+
 # =====================================================================
 #  Cookie ヘルパー — 毎回フレッシュなコピーを生成
 # =====================================================================
@@ -290,14 +305,7 @@ def _run_download(
 
         # ----- 動画情報を先に取得（フレッシュCookie + PO Token）-----
         info_cookie = _fresh_cookie_path(task_dir)
-        info_opts: dict = {
-            "quiet": True, "no_warnings": True, "noplaylist": True,
-            "extractor_args": {
-                "youtube": {
-                    "getpot_bgutil_baseurl": [_POT_SERVER_URL],
-                },
-            },
-        }
+        info_opts = _base_ydl_opts()
         if info_cookie:
             info_opts["cookiefile"] = info_cookie
 
@@ -331,20 +339,13 @@ def _run_download(
             # 毎回フレッシュなCookieコピーを使う
             dl_cookie = _fresh_cookie_path(task_dir)
 
-            dl_opts: dict = {
+            dl_opts = _base_ydl_opts()
+            dl_opts.update({
                 "outtmpl": output_tpl,
                 "progress_hooks": [lambda d: _progress_hook(d, task_id)],
-                "quiet": True,
-                "no_warnings": True,
-                "noplaylist": True,
                 "windowsfilenames": True,
                 "format": fmt_str,
-                "extractor_args": {
-                    "youtube": {
-                        "getpot_bgutil_baseurl": [_POT_SERVER_URL],
-                    },
-                },
-            }
+            })
             if dl_cookie:
                 dl_opts["cookiefile"] = dl_cookie
             if postprocessors:
@@ -446,14 +447,7 @@ def api_info():
 
     try:
         cookie_path = _fresh_cookie_path()
-        ydl_opts: dict = {
-            "quiet": True, "no_warnings": True, "noplaylist": True,
-            "extractor_args": {
-                "youtube": {
-                    "getpot_bgutil_baseurl": [_POT_SERVER_URL],
-                },
-            },
-        }
+        ydl_opts = _base_ydl_opts()
         if cookie_path:
             ydl_opts["cookiefile"] = cookie_path
 
