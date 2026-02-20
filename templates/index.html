@@ -440,7 +440,7 @@
                     eta.textContent = data.eta ? `残り: ${data.eta}` : '';
                     break;
                 case 'processing':
-                    status.textContent = '変換処理中...';
+                    status.textContent = data.message || '変換処理中...';
                     speed.textContent = '';
                     eta.textContent = '';
                     break;

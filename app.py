@@ -12,6 +12,8 @@ import threading
 import tempfile
 import shutil
 import logging
+import subprocess
+import json as _json
 from urllib.parse import quote
 
 from flask import Flask, render_template, request, jsonify, Response
@@ -172,17 +174,107 @@ def _progress_hook(d: dict, task_id: str) -> None:
 
 # フォーマット試行リスト（上から順に試す）
 def _video_format_chain(height: int) -> list[str]:
-    """動画フォーマットの優先順位リスト"""
+    """動画フォーマットの優先順位リスト（H.264 + AAC を最優先）
+
+    Premiere Pro などの編集ソフトで読み込めるよう、
+    AV1/VP9 ではなく H.264 コーデックを優先して取得する。
+    H.264 が無い画質の場合はフォールバックし、後段で FFmpeg 変換する。
+    """
     return [
-        # 1. 指定画質で映像+音声を結合
+        f"bestvideo[vcodec^=avc1][height<={height}]+bestaudio[acodec^=mp4a]",
+        f"bestvideo[vcodec^=avc1][height<={height}]+bestaudio",
+        f"bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]",
+        f"bestvideo[vcodec^=avc1]+bestaudio",
         f"bestvideo[height<={height}]+bestaudio",
-        # 2. 画質制限なしで映像+音声を結合
         "bestvideo+bestaudio",
-        # 3. 指定画質以下の結合済みファイル
         f"best[height<={height}]",
-        # 4. とにかく最高品質
         "best",
     ]
+
+
+def _check_codecs(filepath: str) -> tuple[str | None, str | None]:
+    """ffprobe でファイルの映像/音声コーデックを返す"""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "quiet",
+                "-show_streams", "-print_format", "json",
+                filepath,
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+        probe = _json.loads(result.stdout)
+        video_codec = audio_codec = None
+        for stream in probe.get("streams", []):
+            ct = stream.get("codec_type")
+            if ct == "video" and video_codec is None:
+                video_codec = stream.get("codec_name")
+            elif ct == "audio" and audio_codec is None:
+                audio_codec = stream.get("codec_name")
+        return video_codec, audio_codec
+    except Exception as exc:
+        logger.warning("ffprobe failed: %s", exc)
+        return None, None
+
+
+def _ensure_premiere_compatible(filepath: str, task_id: str) -> str:
+    """映像が H.264、音声が AAC でなければ FFmpeg で変換する。
+
+    H.264 ストリームがある場合はコピー（高速）、
+    AV1/VP9 など非互換コーデックの場合のみ再エンコードする。
+    """
+    video_codec, audio_codec = _check_codecs(filepath)
+    logger.info(
+        "[%s] Detected codecs: video=%s audio=%s",
+        task_id, video_codec, audio_codec,
+    )
+
+    needs_video = video_codec is not None and video_codec != "h264"
+    needs_audio = audio_codec is not None and audio_codec != "aac"
+
+    if not needs_video and not needs_audio:
+        logger.info("[%s] Already H.264+AAC — skipping conversion", task_id)
+        return filepath
+
+    _update_task(
+        task_id, status="processing", percent=99,
+        message="Premiere Pro 互換形式（H.264 + AAC）に変換中...",
+    )
+
+    base, _ = os.path.splitext(filepath)
+    tmp_output = base + "_h264.mp4"
+
+    cmd = ["ffmpeg", "-i", filepath]
+    if needs_video:
+        cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "18"]
+    else:
+        cmd += ["-c:v", "copy"]
+    if needs_audio:
+        cmd += ["-c:a", "aac", "-b:a", "192k"]
+    else:
+        cmd += ["-c:a", "copy"]
+    cmd += ["-movflags", "+faststart", "-y", tmp_output]
+
+    logger.info("[%s] FFmpeg converting: %s", task_id, " ".join(cmd))
+
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=3600)
+        os.remove(filepath)
+        final_path = base + ".mp4"
+        os.rename(tmp_output, final_path)
+        logger.info("[%s] Conversion complete: %s", task_id, final_path)
+        return final_path
+    except subprocess.TimeoutExpired:
+        logger.error("[%s] FFmpeg conversion timed out (1h limit)", task_id)
+        if os.path.isfile(tmp_output):
+            os.remove(tmp_output)
+        return filepath
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode(errors="replace") if exc.stderr else ""
+        logger.error("[%s] FFmpeg conversion failed: %s", task_id, stderr[:500])
+        if os.path.isfile(tmp_output):
+            os.remove(tmp_output)
+        return filepath
 
 
 def _run_download(
@@ -313,6 +405,11 @@ def _run_download(
             (os.path.join(task_dir, f) for f in result_files),
             key=os.path.getsize,
         )
+
+        # ----- Premiere Pro 互換変換（動画の場合のみ） -----
+        if format_type == "video":
+            filepath = _ensure_premiere_compatible(filepath, task_id)
+
         filename = os.path.basename(filepath)
         filesize = os.path.getsize(filepath)
 
