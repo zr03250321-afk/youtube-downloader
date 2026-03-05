@@ -54,8 +54,8 @@ def _base_ydl_opts() -> dict:
         "noplaylist": True,
         "remote_components": ["ejs:github"],
         "extractor_args": {
-            "youtube": {
-                "getpot_bgutil_baseurl": [_POT_SERVER_URL],
+            "youtubepot-bgutilhttp": {
+                "base_url": [_POT_SERVER_URL],
             },
         },
     }

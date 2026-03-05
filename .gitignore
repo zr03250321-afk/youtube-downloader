@@ -19,3 +19,11 @@ dist/
 # IDE
 .idea/
 .vscode/
+.cursor/
+
+# Logs
+download_log.txt
+downloaded.txt
+
+# Deployment credentials (パスワード含むため)
+DEPLOYMENT.md
