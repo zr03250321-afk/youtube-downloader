@@ -53,6 +53,7 @@ def _base_ydl_opts() -> dict:
         "no_warnings": True,
         "noplaylist": True,
         "remote_components": ["ejs:github"],
+        "format_sort": ["vcodec:h264", "acodec:aac"],
         "extractor_args": {
             "youtubepot-bgutilhttp": {
                 "base_url": [_POT_SERVER_URL],
@@ -189,19 +190,29 @@ def _progress_hook(d: dict, task_id: str) -> None:
 
 # フォーマット試行リスト（上から順に試す）
 def _video_format_chain(height: int) -> list[str]:
-    """動画フォーマットの優先順位リスト（H.264 + AAC を最優先）
+    """動画フォーマットの優先順位リスト（SABR 対策 + H.264 優先）
 
-    Premiere Pro などの編集ソフトで読み込めるよう、
-    AV1/VP9 ではなく H.264 コーデックを優先して取得する。
-    H.264 が無い画質の場合はフォールバックし、後段で FFmpeg 変換する。
+    YouTube が SABR ストリーミングを強制し、web/web_safari クライアントの
+    HTTPS 分離ストリーム（映像と音声を別々にDL）が利用不可になった。
+    代わりに m3u8（HLS）フォーマットを最優先で取得する。
+    m3u8 は H.264 + AAC の結合フォーマットなので Premiere Pro 互換。
+
+    HTTPS 分離ストリームは tv クライアント + PO Token で
+    まだ取得できる場合があるため、フォールバックとして残す。
     """
     return [
+        # m3u8 (HLS) 結合フォーマット — SABR 環境で最も安定
+        f"best[protocol^=m3u8][vcodec^=avc1][height<={height}]",
+        f"best[protocol^=m3u8][height<={height}]",
+        f"best[protocol^=m3u8]",
+        # HTTPS 分離ストリーム — tv クライアント等で取得できる場合
         f"bestvideo[vcodec^=avc1][height<={height}]+bestaudio[acodec^=mp4a]",
         f"bestvideo[vcodec^=avc1][height<={height}]+bestaudio",
         f"bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]",
         f"bestvideo[vcodec^=avc1]+bestaudio",
         f"bestvideo[height<={height}]+bestaudio",
         "bestvideo+bestaudio",
+        # HTTPS 結合フォーマット (format 18 等)
         f"best[height<={height}]",
         "best",
     ]

@@ -22,8 +22,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
     rm -rf /var/lib/apt/lists/*
 
-# bgutil PO Token サーバーをビルド（v1.3.0）
-RUN git clone --single-branch --branch 1.3.0 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /opt/bgutil && \
+# bgutil PO Token サーバーをビルド（v1.3.1）
+RUN git clone --single-branch --branch 1.3.1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /opt/bgutil && \
     cd /opt/bgutil/server && \
     npm ci && \
     npx tsc
