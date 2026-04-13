@@ -17,6 +17,13 @@ worker_class = "gthread"  # スレッド対応ワーカー
 timeout = 600             # 10 分（大きなファイルのストリーミング用）
 graceful_timeout = 30     # シャットダウン猶予
 
+# ===== ワーカー自動リサイクル =====
+# 一定回数のリクエスト処理後にワーカーを自動再起動する
+# → メモリリークやハングの予防（交代制のような仕組み）
+max_requests = 50         # 50 リクエスト処理後に再起動
+max_requests_jitter = 10  # ±10 のランダム幅で一斉再起動を防ぐ
+worker_tmp_dir = "/dev/shm"  # RAM 上に健全性チェック用ファイルを置く（高速）
+
 # ===== ログ設定 =====
 accesslog = "-"           # stdout へ出力
 errorlog = "-"            # stdout へ出力

@@ -608,7 +608,49 @@ def api_download(task_id: str):
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok", "timestamp": time.time()})
+    """総合ヘルスチェック — 各コンポーネントの状態を確認"""
+    checks = {}
+    healthy = True
+
+    # 1. yt-dlp バージョン確認
+    try:
+        checks["yt_dlp_version"] = yt_dlp.version.__version__
+    except Exception:
+        checks["yt_dlp_version"] = "unknown"
+
+    # 2. PO Token サーバーの稼働確認（接続できれば OK — 404 は正常応答）
+    try:
+        import urllib.request
+        req = urllib.request.Request(_POT_SERVER_URL, method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            checks["pot_server"] = "ok"
+    except urllib.error.HTTPError:
+        # 404 等の HTTP エラー = サーバーは動いている
+        checks["pot_server"] = "ok"
+    except Exception:
+        checks["pot_server"] = "down"
+        healthy = False
+
+    # 3. 一時ディレクトリの空き容量確認
+    try:
+        disk = shutil.disk_usage(TEMP_BASE_DIR)
+        free_mb = disk.free // (1024 * 1024)
+        checks["disk_free_mb"] = free_mb
+        if free_mb < 500:
+            checks["disk_warning"] = "空き容量が少なくなっています"
+            healthy = False
+    except Exception:
+        checks["disk_free_mb"] = "unknown"
+
+    # 4. アクティブタスク数
+    checks["active_downloads"] = _count_active()
+
+    status_code = 200 if healthy else 503
+    return jsonify({
+        "status": "ok" if healthy else "degraded",
+        "timestamp": time.time(),
+        "checks": checks,
+    }), status_code
 
 
 # =====================================================================

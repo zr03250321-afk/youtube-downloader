@@ -38,4 +38,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 RUN chmod +x start.sh
 
+# コンテナ内蔵ヘルスチェック（30秒ごとに /health を確認）
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
 CMD ["./start.sh"]
