@@ -28,3 +28,6 @@ downloaded.txt
 # Deployment credentials (パスワード含むため)
 DEPLOYMENT.md
 update_vps.sh
+
+# 監視用シークレット (Discord Webhook URL含むため)
+.env.monitor

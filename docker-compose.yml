@@ -1,0 +1,19 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    # 異常終了時に自動で再起動（手動で stop しない限り常に復旧する）
+    restart: unless-stopped
+    environment:
+      - PORT=8080
+    volumes:
+      # Cookie ファイルを外部からマウント
+      - /opt/cookies/cookies.txt:/etc/secrets/cookies.txt:ro
+    # Docker レベルのヘルスチェック
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
